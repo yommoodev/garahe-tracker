@@ -6,6 +6,7 @@ import AuthPage from "./pages/AuthPage";
 import DashboardPage from "./pages/DashboardPage";
 import VehiclesPage from "./pages/VehiclePage";
 import MaintenancePage from "./pages/MaintenancePage";
+import FuelPage from './pages/FuelPage';
 
 export default function App() {
   const { loading } = useAuth();
@@ -20,12 +21,11 @@ export default function App() {
 
   return (
     <Routes>
+      <Route path="*" element={<Navigate to="/" replace />} />
       <Route path="/login" element={<AuthPage />} />
-
       <Route element={<ProtectedRoute />}>
         <Route path="/" element={<DashboardPage />} />
       </Route>
-
       <Route element={<ProtectedRoute/>}>
         <Route  path="/vehicles" element={<VehiclesPage />} />
       </Route>
@@ -34,7 +34,9 @@ export default function App() {
         <Route  path="/maintenance" element={<MaintenancePage />} />
       </Route>
 
-      <Route path="*" element={<Navigate to="/" replace />} />
+      <Route element={<ProtectedRoute/>}>
+        <Route  path="/fuel" element={<FuelPage />} />
+      </Route>
     </Routes>
   );
 }
