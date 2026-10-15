@@ -1,266 +1,525 @@
 
-import { useState } from "react";
-import {
-  Activity,
-  Bell,
-  CarFront,
-  ChevronDown,
-  CirclePlus,
-  Fuel,
-  Gauge,
-  LayoutDashboard,
-  LogOut,
-  Settings,
-  Wrench,
-} from "lucide-react";
+import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { supabase } from "../lib/supabase";
-import { useAuth } from "../AuthContext";
+
+type Vehicle = {
+  id: string;
+  nickname: string | null;
+  make: string;
+  model: string;
+  model_year: number | null;
+  current_odometer: number;
+  odometer_unit: string;
+};
+
+type MaintenanceRecord = {
+  id: string;
+  vehicle_id: string;
+  title: string;
+  category: string;
+  service_date: string;
+  cost: number;
+  currency: string;
+  created_at: string;
+};
+
+type FuelLog = {
+  id: string;
+  vehicle_id: string;
+  fill_date: string;
+  total_cost: number;
+  liters: number;
+  created_at: string;
+};
+
+type Reminder = {
+  id: string;
+  vehicle_id: string;
+  title: string;
+  due_date: string | null;
+  due_odometer: number | null;
+  completed_at: string | null;
+};
+
+type DashboardData = {
+  vehicles: Vehicle[];
+  maintenance: MaintenanceRecord[];
+  fuel: FuelLog[];
+  reminders: Reminder[];
+};
+
+const php = (value: number) =>
+  new Intl.NumberFormat("en-PH", {
+    style: "currency",
+    currency: "PHP",
+    maximumFractionDigits: 2,
+  }).format(value);
+
+const dateLabel = (value: string) =>
+  new Date(`${value}T00:00:00`).toLocaleDateString("en-PH", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+
+const todayString = () => {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
 
 export default function DashboardPage() {
-  const { session } = useAuth();
-  const [signingOut, setSigningOut] = useState(false);
+  const [data, setData] = useState<DashboardData>({
+    vehicles: [],
+    maintenance: [],
+    fuel: [],
+    reminders: [],
+  });
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  async function handleSignOut() {
-    setSigningOut(true);
-    setError("");
+  useEffect(() => {
+    let active = true;
 
-    const { error } = await supabase.auth.signOut();
+    async function loadDashboard() {
+      setLoading(true);
+      setError("");
 
-    if (error) {
-      setError(error.message);
-      setSigningOut(false);
+      try {
+        const { data: authData, error: authError } =
+          await supabase.auth.getUser();
+
+        if (authError) throw authError;
+        if (!authData.user) throw new Error("Please sign in again.");
+
+        const userId = authData.user.id;
+
+        const [
+          vehiclesResult,
+          maintenanceResult,
+          fuelResult,
+          remindersResult,
+        ] = await Promise.all([
+          supabase
+            .from("vehicles")
+            .select(
+              "id, nickname, make, model, model_year, current_odometer, odometer_unit",
+            )
+            .eq("user_id", userId)
+            .order("created_at", { ascending: false }),
+
+          supabase
+            .from("maintenance_records")
+            .select(
+              "id, vehicle_id, title, category, service_date, cost, currency, created_at",
+            )
+            .eq("user_id", userId)
+            .order("service_date", { ascending: false }),
+
+          supabase
+            .from("fuel_logs")
+            .select(
+              "id, vehicle_id, fill_date, total_cost, liters, created_at",
+            )
+            .eq("user_id", userId)
+            .order("fill_date", { ascending: false }),
+
+          supabase
+            .from("maintenance_reminders")
+            .select(
+              "id, vehicle_id, title, due_date, due_odometer, completed_at",
+            )
+            .eq("user_id", userId),
+        ]);
+
+        const firstError =
+          vehiclesResult.error ??
+          maintenanceResult.error ??
+          fuelResult.error ??
+          remindersResult.error;
+
+        if (firstError) throw firstError;
+
+        if (active) {
+          setData({
+            vehicles: (vehiclesResult.data ?? []) as Vehicle[],
+            maintenance: (maintenanceResult.data ?? []) as MaintenanceRecord[],
+            fuel: (fuelResult.data ?? []) as FuelLog[],
+            reminders: (remindersResult.data ?? []) as Reminder[],
+          });
+        }
+      } catch (err) {
+        if (active) {
+          setError(
+            err instanceof Error
+              ? err.message
+              : "Unable to load your dashboard.",
+          );
+        }
+      } finally {
+        if (active) setLoading(false);
+      }
     }
+
+    void loadDashboard();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const today = todayString();
+
+  const maintenanceTotal = data.maintenance.reduce(
+    (sum, record) => sum + Number(record.cost || 0),
+    0,
+  );
+
+  const fuelTotal = data.fuel.reduce(
+    (sum, log) => sum + Number(log.total_cost || 0),
+    0,
+  );
+
+  const pendingReminders = data.reminders.filter(
+    (reminder) => !reminder.completed_at,
+  );
+
+  const overdueReminders = pendingReminders.filter(
+    (reminder) => reminder.due_date && reminder.due_date < today,
+  );
+
+  const upcomingReminders = pendingReminders
+    .filter(
+      (reminder) => !reminder.due_date || reminder.due_date >= today,
+    )
+    .sort((a, b) => {
+      if (!a.due_date) return 1;
+      if (!b.due_date) return -1;
+      return a.due_date.localeCompare(b.due_date);
+    })
+    .slice(0, 5);
+
+  const recentActivity = [
+    ...data.maintenance.map((record) => ({
+      id: `maintenance-${record.id}`,
+      type: "Maintenance",
+      title: record.title,
+      date: record.service_date,
+      cost: Number(record.cost || 0),
+    })),
+    ...data.fuel.map((log) => ({
+      id: `fuel-${log.id}`,
+      type: "Fuel",
+      title: "Fuel refill",
+      date: log.fill_date,
+      cost: Number(log.total_cost || 0),
+    })),
+  ]
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .slice(0, 6);
+
+  if (loading) {
+    return (
+      <main className="min-h-screen bg-slate-950 p-6 text-slate-100">
+        <p className="text-slate-400">Loading your GarageLog dashboard...</p>
+      </main>
+    );
   }
 
-  const email = session?.user.email ?? "Driver";
-  const displayName =
-    session?.user.user_metadata?.display_name || email.split("@")[0];
-
-  const navItems = [
-    { label: "Overview", icon: LayoutDashboard, active: true },
-    { label: "My Vehicles", icon: CarFront, active: false },
-    { label: "Maintenance", icon: Wrench, active: false },
-    { label: "Fuel Log", icon: Fuel, active: false },
-    { label: "Reminders", icon: Bell, active: false },
-  ];
-
-  // async function testVehicleAccess() {
-  //   const { data, error } = await supabase
-  //     .from("vehicles")
-  //     .select("id, make, model, user_id");
-
-  //   console.log("Vehicles:", data);
-  //   console.log("Error:", error);
-  // }
-
   return (
-    <div className="min-h-screen bg-[#090b10] text-slate-100">
-      <aside className="fixed inset-y-0 left-0 hidden w-64 flex-col border-r border-white/[0.07] bg-[#0d1017] lg:flex">
-        <div className="flex h-[76px] items-center gap-3 border-b border-white/[0.07] px-6">
-          <div className="rounded-xl bg-orange-500 p-2 text-white">
-            <CarFront size={23} />
-          </div>
+    <main className="min-h-screen bg-slate-950 px-4 py-6 text-slate-100 sm:px-6 lg:px-8">
+      <div className="mx-auto max-w-7xl space-y-8">
+        <header className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
           <div>
-            <p className="font-bold tracking-tight">GarageLog</p>
-            <p className="text-[10px] tracking-[0.18em] text-slate-500">
-              VEHICLE MANAGEMENT
+            <p className="text-sm font-medium uppercase tracking-[0.2em] text-orange-400">
+              GarageLog
+            </p>
+            <h1 className="mt-2 text-3xl font-bold tracking-tight">
+              Dashboard
+            </h1>
+            <p className="mt-2 text-slate-400">
+              Your vehicles, expenses, and maintenance at a glance.
             </p>
           </div>
-        </div>
 
-        <div className="px-4 pt-7">
-          <p className="mb-3 px-3 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-600">
-            Workspace
-          </p>
-          <nav className="space-y-1">
-            {navItems.map(({ label, icon: Icon, active }) => (
-              <button
-                key={label}
-                disabled={!active}
-                className={`flex w-full items-center gap-3 rounded-xl px-3 py-3 text-sm transition ${
-                  active
-                    ? "bg-orange-500/10 font-medium text-orange-400"
-                    : "text-slate-500 hover:bg-white/[0.03]"
-                }`}
-              >
-                <Icon size={18} />
-                {label}
-                {label === "Overview" && (
-                  <span className="ml-auto h-1.5 w-1.5 rounded-full bg-orange-400" />
-                )}
-              </button>
-            ))}
-          </nav>
-        </div>
-
-        <div className="mt-auto p-4">
-          <button
-            disabled
-            className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-sm text-slate-500"
-          >
-            <Settings size={18} />
-            Settings
-          </button>
-          <div className="mt-3 border-t border-white/[0.07] pt-4">
-            <div className="flex items-center gap-3 px-2">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-800 font-semibold text-orange-300">
-                {displayName.charAt(0).toUpperCase()}
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-medium">{displayName}</p>
-                <p className="truncate text-xs text-slate-500">{email}</p>
-              </div>
-              <button
-                aria-label="Sign out"
-                onClick={handleSignOut}
-                disabled={signingOut}
-                className="rounded-lg p-2 text-slate-500 hover:bg-white/5 hover:text-white"
-              >
-                <LogOut size={17} />
-              </button>
-            </div>
-          </div>
-        </div>
-      </aside>
-
-      <main className="lg:ml-64">
-        <header className="flex h-[76px] items-center justify-between border-b border-white/[0.07] px-5 sm:px-8">
-          <div>
-            <p className="text-sm text-slate-500">Garage / Overview</p>
-          </div>
-          <div className="flex items-center gap-3">
-            <span className="hidden text-sm text-slate-400 sm:block">
-              Welcome, {displayName}
-            </span>
-            <div className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-[#151923]">
-              <Bell size={17} className="text-slate-400" />
-            </div>
-            <button
-              onClick={handleSignOut}
-              disabled={signingOut}
-              className="flex items-center gap-2 rounded-lg border border-white/10 px-3 py-2 text-xs text-slate-300 hover:bg-white/5 lg:hidden"
+          <div className="flex flex-wrap gap-3">
+            <Link
+              to="/vehicles"
+              className="rounded-xl border border-slate-700 px-4 py-2.5 text-sm font-semibold hover:bg-slate-800"
             >
-              <LogOut size={15} />
-              Sign out
-            </button>
+              Manage vehicles
+            </Link>
+            <Link
+              to="/maintenance"
+              className="rounded-xl bg-orange-500 px-4 py-2.5 text-sm font-semibold text-slate-950 hover:bg-orange-400"
+            >
+              + Add service
+            </Link>
           </div>
         </header>
 
-        <div className="mx-auto max-w-[1440px] p-5 sm:p-8">
-          <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-orange-400">
-                Your garage at a glance
-              </p>
-              <h1 className="mt-2 text-3xl font-semibold tracking-tight sm:text-4xl">
-                Dashboard
-              </h1>
-              <p className="mt-2 text-sm text-slate-500">
-                Your vehicles, maintenance, and ownership costs in one place.
-              </p>
-            </div>
-            <button
-              disabled
-              title="Vehicle creation is coming in the next milestone"
-              className="flex items-center justify-center gap-2 rounded-xl bg-orange-500 px-4 py-3 text-sm font-semibold text-white opacity-60"
-            >
-              <CirclePlus size={18} />
-              Add vehicle
-            </button>
+        {error && (
+          <div
+            role="alert"
+            className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300"
+          >
+            {error}
           </div>
+        )}
 
-          {error && (
-            <p role="alert" className="mt-5 rounded-xl bg-red-500/10 p-3 text-sm text-red-300">
-              {error}
-            </p>
-          )}
+        <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <StatCard
+            label="My vehicles"
+            value={String(data.vehicles.length)}
+            detail="Vehicles in your garage"
+          />
+          <StatCard
+            label="Maintenance spending"
+            value={php(maintenanceTotal)}
+            detail={`${data.maintenance.length} service records`}
+          />
+          <StatCard
+            label="Fuel spending"
+            value={php(fuelTotal)}
+            detail={`${data.fuel.length} fuel logs`}
+          />
+          <StatCard
+            label="Pending reminders"
+            value={String(pendingReminders.length)}
+            detail={`${overdueReminders.length} overdue by date`}
+            warning={overdueReminders.length > 0}
+          />
+        </section>
 
-          <section className="mt-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            {[
-              { label: "MY VEHICLES", value: "—", icon: CarFront },
-              { label: "MAINTENANCE COST", value: "—", icon: Wrench },
-              { label: "FUEL ECONOMY", value: "—", icon: Fuel },
-              { label: "UPCOMING SERVICES", value: "—", icon: Activity },
-            ].map(({ label, value, icon: Icon }) => (
-              <article
-                key={label}
-                className="rounded-2xl border border-white/[0.07] bg-[#10141c] p-5"
+        <section className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
+          <div className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5 sm:p-6">
+            <div className="mb-5 flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold">My garage</h2>
+                <p className="mt-1 text-sm text-slate-400">
+                  Current vehicles and odometer readings
+                </p>
+              </div>
+              <Link
+                to="/vehicles"
+                className="text-sm font-medium text-orange-400 hover:text-orange-300"
               >
-                <div className="flex items-center justify-between">
-                  <p className="text-[10px] font-semibold tracking-[0.15em] text-slate-500">
-                    {label}
-                  </p>
-                  <Icon size={18} className="text-orange-400" />
-                </div>
-                <p className="mt-6 text-3xl font-semibold">{value}</p>
-                <p className="mt-2 text-xs text-slate-600">
-                  Will appear when you add your records
-                </p>
-              </article>
-            ))}
-          </section>
+                View all
+              </Link>
+            </div>
 
-          <section className="mt-6 grid gap-6 xl:grid-cols-[1.4fr_1fr]">
-            <article className="rounded-2xl border border-white/[0.07] bg-[#10141c] p-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h2 className="font-semibold">My Garage</h2>
-                  <p className="mt-1 text-sm text-slate-500">
-                    Your registered vehicles
-                  </p>
-                </div>
-                <CarFront className="text-slate-500" />
-              </div>
-              <div className="mt-6 flex min-h-52 flex-col items-center justify-center rounded-xl border border-dashed border-white/10 px-5 text-center">
-                <div className="rounded-2xl bg-white/[0.04] p-4">
-                  <CarFront size={28} className="text-orange-400" />
-                </div>
-                <h3 className="mt-4 font-medium">Your garage is ready</h3>
-                <p className="mt-2 max-w-sm text-sm leading-6 text-slate-500">
-                  Add your first vehicle to start tracking service history,
-                  fuel usage, and running costs.
-                </p>
-              </div>
-            </article>
-
-            <article className="rounded-2xl border border-white/[0.07] bg-[#10141c] p-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h2 className="font-semibold">Maintenance overview</h2>
-                  <p className="mt-1 text-sm text-slate-500">
-                    Keep your next service in sight
-                  </p>
-                </div>
-                <Gauge className="text-slate-500" />
-              </div>
-              <div className="mt-6 space-y-3">
-                {[
-                  "Oil and filter changes",
-                  "Tires and brakes",
-                  "Battery and fluids",
-                ].map((item) => (
+            {data.vehicles.length === 0 ? (
+              <EmptyState
+                message="Your garage is empty."
+                link="/vehicles"
+                action="Add your first vehicle"
+              />
+            ) : (
+              <div className="space-y-3">
+                {data.vehicles.map((vehicle) => (
                   <div
-                    key={item}
-                    className="flex items-center justify-between rounded-xl border border-white/[0.06] bg-white/[0.02] p-4"
+                    key={vehicle.id}
+                    className="flex flex-col justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950/60 p-4 sm:flex-row sm:items-center"
                   >
-                    <span className="text-sm text-slate-400">{item}</span>
-                    <ChevronDown size={16} className="text-slate-600" />
+                    <div>
+                      <p className="font-semibold">
+                        {vehicle.nickname ||
+                          `${vehicle.make} ${vehicle.model}`}
+                      </p>
+                      <p className="mt-1 text-sm text-slate-400">
+                        {vehicle.model_year
+                          ? `${vehicle.model_year} · `
+                          : ""}
+                        {vehicle.make} {vehicle.model}
+                      </p>
+                    </div>
+                    <div className="sm:text-right">
+                      <p className="font-semibold tabular-nums">
+                        {Number(vehicle.current_odometer).toLocaleString(
+                          "en-PH",
+                        )}{" "}
+                        {vehicle.odometer_unit}
+                      </p>
+                      <p className="text-xs text-slate-500">Odometer</p>
+                    </div>
                   </div>
                 ))}
               </div>
-              <p className="mt-4 text-xs leading-5 text-slate-600">
-                These are placeholders. Real service records and reminders
-                will be connected in upcoming milestones.
-              </p>
-            </article>
-          </section>
+            )}
+          </div>
 
-          <p className="mt-8 text-center text-xs text-slate-700">
-            GARAGELOG · BUILT FOR EVERY MILE
-          </p>
-        </div>
-      </main>
+          <div className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5 sm:p-6">
+            <div className="mb-5 flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold">Maintenance reminders</h2>
+                <p className="mt-1 text-sm text-slate-400">
+                  Keep your next service on schedule
+                </p>
+              </div>
+              <Link
+                to="/reminders"
+                className="text-sm font-medium text-orange-400 hover:text-orange-300"
+              >
+                View all
+              </Link>
+            </div>
+
+            {overdueReminders.length > 0 && (
+              <div className="mb-4 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">
+                {overdueReminders.length} reminder
+                {overdueReminders.length === 1 ? " is" : "s are"} overdue by
+                date.
+              </div>
+            )}
+
+            {upcomingReminders.length === 0 ? (
+              <p className="rounded-xl bg-slate-950/60 p-4 text-sm text-slate-400">
+                No pending reminders with upcoming dates.
+              </p>
+            ) : (
+              <div className="space-y-3">
+                {upcomingReminders.map((reminder) => (
+                  <div
+                    key={reminder.id}
+                    className="rounded-xl border border-slate-800 p-3"
+                  >
+                    <p className="font-medium">{reminder.title}</p>
+                    <p className="mt-1 text-sm text-slate-400">
+                      {reminder.due_date
+                        ? `Due ${dateLabel(reminder.due_date)}`
+                        : "Date not set"}
+                    </p>
+                    {reminder.due_odometer !== null && (
+                      <p className="mt-1 text-xs text-slate-500">
+                        At {reminder.due_odometer.toLocaleString("en-PH")} km
+                        or configured odometer reading
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <Link
+              to="/reminders"
+              className="mt-4 inline-flex text-sm font-medium text-orange-400 hover:text-orange-300"
+            >
+              Manage reminders →
+            </Link>
+          </div>
+        </section>
+
+        <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5 sm:p-6">
+          <div className="mb-5 flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold">Recent activity</h2>
+              <p className="mt-1 text-sm text-slate-400">
+                Your latest maintenance and fuel entries
+              </p>
+            </div>
+            <Link
+              to="/analytics"
+              className="text-sm font-medium text-orange-400 hover:text-orange-300"
+            >
+              View analytics
+            </Link>
+          </div>
+
+          {recentActivity.length === 0 ? (
+            <p className="rounded-xl bg-slate-950/60 p-4 text-sm text-slate-400">
+              Your activity will appear here when you add service records or
+              fuel logs.
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[500px] text-left text-sm">
+                <thead className="text-xs uppercase tracking-wide text-slate-500">
+                  <tr>
+                    <th className="pb-3 pr-4 font-medium">Activity</th>
+                    <th className="pb-3 pr-4 font-medium">Type</th>
+                    <th className="pb-3 pr-4 font-medium">Date</th>
+                    <th className="pb-3 text-right font-medium">Cost</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {recentActivity.map((activity) => (
+                    <tr
+                      key={activity.id}
+                      className="border-t border-slate-800"
+                    >
+                      <td className="py-3 pr-4 font-medium">
+                        {activity.title}
+                      </td>
+                      <td className="py-3 pr-4">
+                        <span className="rounded-full bg-slate-800 px-2.5 py-1 text-xs text-slate-300">
+                          {activity.type}
+                        </span>
+                      </td>
+                      <td className="py-3 pr-4 text-slate-400">
+                        {dateLabel(activity.date)}
+                      </td>
+                      <td className="py-3 text-right tabular-nums">
+                        {php(activity.cost)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      </div>
+    </main>
+  );
+}
+
+function StatCard({
+  label,
+  value,
+  detail,
+  warning = false,
+}: {
+  label: string;
+  value: string;
+  detail: string;
+  warning?: boolean;
+}) {
+  return (
+    <div className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
+      <p className="text-sm text-slate-400">{label}</p>
+      <p
+        className={`mt-3 break-words text-2xl font-bold tracking-tight ${
+          warning ? "text-red-400" : "text-slate-100"
+        }`}
+      >
+        {value}
+      </p>
+      <p className="mt-2 text-xs text-slate-500">{detail}</p>
+    </div>
+  );
+}
+
+function EmptyState({
+  message,
+  link,
+  action,
+}: {
+  message: string;
+  link: string;
+  action: string;
+}) {
+  return (
+    <div className="rounded-xl border border-dashed border-slate-700 p-6 text-center">
+      <p className="text-sm text-slate-400">{message}</p>
+      <Link
+        to={link}
+        className="mt-3 inline-block text-sm font-semibold text-orange-400 hover:text-orange-300"
+      >
+        {action} →
+      </Link>
     </div>
   );
 }

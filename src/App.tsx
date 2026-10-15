@@ -8,6 +8,7 @@ import VehiclesPage from "./pages/VehiclePage";
 import MaintenancePage from "./pages/MaintenancePage";
 import FuelPage from './pages/FuelPage';
 import MaintenanceRemindersPage from './pages/MaintenanceRemindersPage';
+import AnalyticsPage from './pages/AnalyticsPage'
 
 export default function App() {
   const { loading } = useAuth();
@@ -41,6 +42,10 @@ export default function App() {
 
       <Route element={<ProtectedRoute/>}>
         <Route  path="/reminders" element={<MaintenanceRemindersPage />} />
+      </Route>
+
+      <Route element={<ProtectedRoute/>}>
+        <Route  path="/analytics" element={<AnalyticsPage />} />
       </Route>
     </Routes>
   );
