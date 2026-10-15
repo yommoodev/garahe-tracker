@@ -45,6 +45,15 @@ export default function DashboardPage() {
     { label: "Reminders", icon: Bell, active: false },
   ];
 
+  // async function testVehicleAccess() {
+  //   const { data, error } = await supabase
+  //     .from("vehicles")
+  //     .select("id, make, model, user_id");
+
+  //   console.log("Vehicles:", data);
+  //   console.log("Error:", error);
+  // }
+
   return (
     <div className="min-h-screen bg-[#090b10] text-slate-100">
       <aside className="fixed inset-y-0 left-0 hidden w-64 flex-col border-r border-white/[0.07] bg-[#0d1017] lg:flex">

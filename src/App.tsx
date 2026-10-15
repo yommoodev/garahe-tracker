@@ -4,6 +4,8 @@ import { useAuth } from "./AuthContext";
 import ProtectedRoute from "./components/ProtectedRoute";
 import AuthPage from "./pages/AuthPage";
 import DashboardPage from "./pages/DashboardPage";
+import VehiclesPage from "./pages/VehiclePage";
+import MaintenancePage from "./pages/MaintenancePage";
 
 export default function App() {
   const { loading } = useAuth();
@@ -22,6 +24,14 @@ export default function App() {
 
       <Route element={<ProtectedRoute />}>
         <Route path="/" element={<DashboardPage />} />
+      </Route>
+
+      <Route element={<ProtectedRoute/>}>
+        <Route  path="/vehicles" element={<VehiclesPage />} />
+      </Route>
+
+      <Route element={<ProtectedRoute/>}>
+        <Route  path="/maintenance" element={<MaintenancePage />} />
       </Route>
 
       <Route path="*" element={<Navigate to="/" replace />} />
