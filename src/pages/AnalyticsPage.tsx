@@ -261,7 +261,7 @@ export default function AnalyticsPage() {
       <div className="mx-auto max-w-7xl space-y-8">
         <header>
           <p className="text-sm font-medium uppercase tracking-[0.2em] text-orange-400">
-            GarageLog
+            Garahe Tracker
           </p>
           <h1 className="mt-2 text-3xl font-bold tracking-tight">
             Analytics

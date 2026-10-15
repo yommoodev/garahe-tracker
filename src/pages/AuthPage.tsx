@@ -79,7 +79,7 @@ export default function AuthPage() {
             <CarFront size={25} />
           </div>
           <div>
-            <p className="text-xl font-bold tracking-tight">GarageLog</p>
+            <p className="text-xl font-bold tracking-tight">Garahe Tracker</p>
             <p className="text-xs text-slate-500">YOUR CAR. YOUR RECORDS.</p>
           </div>
         </div>
@@ -117,7 +117,7 @@ export default function AuthPage() {
         </div>
 
         <p className="text-xs text-slate-600">
-          GARAGELOG · VEHICLE OWNERSHIP TRACKER
+          Garahe Tracker · VEHICLE OWNERSHIP TRACKER
         </p>
         <div className="pointer-events-none absolute -bottom-32 -right-24 h-96 w-96 rounded-full bg-orange-500/10 blur-3xl" />
       </section>
@@ -128,7 +128,7 @@ export default function AuthPage() {
             <span className="rounded-xl bg-orange-500 p-2 text-white">
               <CarFront size={24} />
             </span>
-            <span className="text-xl font-bold">GarageLog</span>
+            <span className="text-xl font-bold">Garahe Tracker</span>
           </Link>
 
           <p className="text-sm font-medium text-orange-400">
@@ -222,7 +222,7 @@ export default function AuthPage() {
           </form>
 
           <p className="mt-6 text-center text-sm text-slate-400">
-            {isSignup ? "Already have an account?" : "New to GarageLog?"}{" "}
+            {isSignup ? "Already have an account?" : "New to Garahe Tracker?"}{" "}
             <button
               type="button"
               onClick={() => {

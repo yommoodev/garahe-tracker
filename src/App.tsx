@@ -28,7 +28,7 @@ export default function App() {
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-[#090b10] text-slate-400">
-        Starting GarageLog...
+        Starting Garahe Tracker...
       </div>
     );
   }

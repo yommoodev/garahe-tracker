@@ -469,7 +469,7 @@ export default function MaintenancePage() {
       <div className="mx-auto max-w-7xl space-y-8">
         <header>
           <p className="text-sm font-semibold uppercase tracking-[0.2em] text-blue-400">
-            GarageLog / Service history
+            Garahe Tracker / Service history
           </p>
           <h1 className="mt-3 text-3xl font-bold tracking-tight sm:text-4xl">
             Maintenance Records

@@ -49,7 +49,7 @@ export default function AppLayout() {
             G
           </div>
           <div>
-            <p className="text-lg font-bold tracking-tight">GarageLog</p>
+            <p className="text-lg font-bold tracking-tight">Garahe Tracker</p>
             <p className="text-xs text-slate-500">Vehicle management</p>
           </div>
         </NavLink>
@@ -91,7 +91,7 @@ export default function AppLayout() {
             </span>
             {signingOut ? "Signing out..." : "Sign out"}
           </button>
-          <p className="mt-4 px-4 text-xs text-slate-600">GarageLog · MVP</p>
+          <p className="mt-4 px-4 text-xs text-slate-600">Garahe Tracker · MVP</p>
         </div>
       </aside>
 
@@ -102,7 +102,7 @@ export default function AppLayout() {
               <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-orange-500 font-black text-slate-950">
                 G
               </div>
-              <span className="font-bold tracking-tight">GarageLog</span>
+              <span className="font-bold tracking-tight">Garahe Tracker</span>
             </NavLink>
 
             <button

@@ -232,7 +232,7 @@ export default function VehiclesPage() {
       <div className="mx-auto max-w-5xl space-y-8">
         <header>
           <p className="text-sm font-medium uppercase tracking-[0.2em] text-orange-400">
-            GarageLog / Garage
+            Garahe Tracker / Garage
           </p>
           <h1 className="mt-2 text-3xl font-bold">My Vehicles</h1>
           <p className="mt-2 text-sm text-gray-400">

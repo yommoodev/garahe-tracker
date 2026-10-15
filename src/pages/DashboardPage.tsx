@@ -224,7 +224,7 @@ export default function DashboardPage() {
     return (
       <main className="min-h-screen bg-slate-950 p-6 text-slate-100">
         <p className="text-slate-400">
-          Loading your GarageLog dashboard...
+          Loading your Garahe Tracker dashboard...
         </p>
       </main>
     );
@@ -236,7 +236,7 @@ export default function DashboardPage() {
         <header className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
           <div>
             <p className="text-sm font-medium uppercase tracking-[0.2em] text-orange-400">
-              GarageLog
+              Garahe Tracker
             </p>
             <h1 className="mt-2 text-3xl font-bold tracking-tight">
               Dashboard
