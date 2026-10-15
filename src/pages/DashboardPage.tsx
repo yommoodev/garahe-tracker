@@ -1,6 +1,7 @@
 
-import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { useAuth } from "../AuthContext";
 import { supabase } from "../lib/supabase";
 
 type Vehicle = {
@@ -71,105 +72,93 @@ const todayString = () => {
   return `${year}-${month}-${day}`;
 };
 
+async function fetchDashboardData(
+  userId: string,
+): Promise<DashboardData> {
+  const [
+    vehiclesResult,
+    maintenanceResult,
+    fuelResult,
+    remindersResult,
+  ] = await Promise.all([
+    supabase
+      .from("vehicles")
+      .select(
+        "id, nickname, make, model, model_year, current_odometer, odometer_unit",
+      )
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false }),
+
+    supabase
+      .from("maintenance_records")
+      .select(
+        "id, vehicle_id, title, category, service_date, cost, currency, created_at",
+      )
+      .eq("user_id", userId)
+      .order("service_date", { ascending: false }),
+
+    supabase
+      .from("fuel_logs")
+      .select(
+        "id, vehicle_id, fill_date, total_cost, liters, created_at",
+      )
+      .eq("user_id", userId)
+      .order("fill_date", { ascending: false }),
+
+    supabase
+      .from("maintenance_reminders")
+      .select(
+        "id, vehicle_id, title, due_date, due_odometer, completed_at",
+      )
+      .eq("user_id", userId),
+  ]);
+
+  const firstError =
+    vehiclesResult.error ??
+    maintenanceResult.error ??
+    fuelResult.error ??
+    remindersResult.error;
+
+  if (firstError) {
+    throw firstError;
+  }
+
+  return {
+    vehicles: (vehiclesResult.data ?? []) as Vehicle[],
+    maintenance: (maintenanceResult.data ?? []) as MaintenanceRecord[],
+    fuel: (fuelResult.data ?? []) as FuelLog[],
+    reminders: (remindersResult.data ?? []) as Reminder[],
+  };
+}
+
 export default function DashboardPage() {
-  const [data, setData] = useState<DashboardData>({
+  const { session } = useAuth();
+  const userId = session?.user.id;
+
+  const {
+    data: dashboardData,
+    isPending,
+    error,
+    refetch,
+    isFetching,
+  } = useQuery<DashboardData, Error>({
+    queryKey: ["dashboard", userId],
+    queryFn: () => {
+      if (!userId) {
+        throw new Error("Please sign in to view your dashboard.");
+      }
+
+      return fetchDashboardData(userId);
+    },
+    enabled: Boolean(userId),
+  });
+
+  const data: DashboardData = dashboardData ?? {
     vehicles: [],
     maintenance: [],
     fuel: [],
     reminders: [],
-  });
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    let active = true;
-
-    async function loadDashboard() {
-      setLoading(true);
-      setError("");
-
-      try {
-        const { data: authData, error: authError } =
-          await supabase.auth.getUser();
-
-        if (authError) throw authError;
-        if (!authData.user) throw new Error("Please sign in again.");
-
-        const userId = authData.user.id;
-
-        const [
-          vehiclesResult,
-          maintenanceResult,
-          fuelResult,
-          remindersResult,
-        ] = await Promise.all([
-          supabase
-            .from("vehicles")
-            .select(
-              "id, nickname, make, model, model_year, current_odometer, odometer_unit",
-            )
-            .eq("user_id", userId)
-            .order("created_at", { ascending: false }),
-
-          supabase
-            .from("maintenance_records")
-            .select(
-              "id, vehicle_id, title, category, service_date, cost, currency, created_at",
-            )
-            .eq("user_id", userId)
-            .order("service_date", { ascending: false }),
-
-          supabase
-            .from("fuel_logs")
-            .select(
-              "id, vehicle_id, fill_date, total_cost, liters, created_at",
-            )
-            .eq("user_id", userId)
-            .order("fill_date", { ascending: false }),
-
-          supabase
-            .from("maintenance_reminders")
-            .select(
-              "id, vehicle_id, title, due_date, due_odometer, completed_at",
-            )
-            .eq("user_id", userId),
-        ]);
-
-        const firstError =
-          vehiclesResult.error ??
-          maintenanceResult.error ??
-          fuelResult.error ??
-          remindersResult.error;
-
-        if (firstError) throw firstError;
-
-        if (active) {
-          setData({
-            vehicles: (vehiclesResult.data ?? []) as Vehicle[],
-            maintenance: (maintenanceResult.data ?? []) as MaintenanceRecord[],
-            fuel: (fuelResult.data ?? []) as FuelLog[],
-            reminders: (remindersResult.data ?? []) as Reminder[],
-          });
-        }
-      } catch (err) {
-        if (active) {
-          setError(
-            err instanceof Error
-              ? err.message
-              : "Unable to load your dashboard.",
-          );
-        }
-      } finally {
-        if (active) setLoading(false);
-      }
-    }
-
-    void loadDashboard();
-
-    return () => {
-      active = false;
-    };
-  }, []);
+  };
 
   const today = todayString();
 
@@ -221,10 +210,22 @@ export default function DashboardPage() {
     .sort((a, b) => b.date.localeCompare(a.date))
     .slice(0, 6);
 
-  if (loading) {
+  if (!userId) {
     return (
       <main className="min-h-screen bg-slate-950 p-6 text-slate-100">
-        <p className="text-slate-400">Loading your GarageLog dashboard...</p>
+        <p className="text-slate-400">
+          Please sign in to view your dashboard.
+        </p>
+      </main>
+    );
+  }
+
+  if (isPending) {
+    return (
+      <main className="min-h-screen bg-slate-950 p-6 text-slate-100">
+        <p className="text-slate-400">
+          Loading your GarageLog dashboard...
+        </p>
       </main>
     );
   }
@@ -264,10 +265,26 @@ export default function DashboardPage() {
         {error && (
           <div
             role="alert"
-            className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300"
+            className="flex flex-col gap-3 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300 sm:flex-row sm:items-center sm:justify-between"
           >
-            {error}
+            <span>
+              {error.message || "Unable to load your dashboard."}
+            </span>
+            <button
+              type="button"
+              onClick={() => void refetch()}
+              disabled={isFetching}
+              className="rounded-lg border border-red-400/30 px-3 py-2 font-medium hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isFetching ? "Retrying..." : "Retry"}
+            </button>
           </div>
+        )}
+
+        {isFetching && (
+          <p className="text-xs text-slate-500" role="status">
+            Refreshing dashboard data...
+          </p>
         )}
 
         <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -354,7 +371,9 @@ export default function DashboardPage() {
           <div className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5 sm:p-6">
             <div className="mb-5 flex items-center justify-between gap-3">
               <div>
-                <h2 className="text-lg font-semibold">Maintenance reminders</h2>
+                <h2 className="text-lg font-semibold">
+                  Maintenance reminders
+                </h2>
                 <p className="mt-1 text-sm text-slate-400">
                   Keep your next service on schedule
                 </p>
@@ -394,8 +413,9 @@ export default function DashboardPage() {
                     </p>
                     {reminder.due_odometer !== null && (
                       <p className="mt-1 text-xs text-slate-500">
-                        At {reminder.due_odometer.toLocaleString("en-PH")} km
-                        or configured odometer reading
+                        At{" "}
+                        {reminder.due_odometer.toLocaleString("en-PH")}{" "}
+                        odometer reading
                       </p>
                     )}
                   </div>

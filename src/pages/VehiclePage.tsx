@@ -1,6 +1,11 @@
 
 import { useEffect, useState } from "react";
-import type { FormEvent } from "react";
+import type { FormEvent, ReactNode } from "react";
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { supabase } from "../lib/supabase";
 
 type Vehicle = {
@@ -33,42 +38,128 @@ const emptyForm = {
 
 type VehicleForm = typeof emptyForm;
 
+async function getVehicles(userId: string): Promise<Vehicle[]> {
+  const { data, error } = await supabase
+    .from("vehicles")
+    .select(
+      "id, nickname, make, model, model_year, trim, color, license_plate, vin, current_odometer, odometer_unit, created_at",
+    )
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false });
+
+  if (error) throw error;
+
+  return (data ?? []) as Vehicle[];
+}
+
 export default function VehiclesPage() {
-  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
-  const [form, setForm] = useState<VehicleForm>(emptyForm);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
+  const queryClient = useQueryClient();
+
+  const [userId, setUserId] = useState<string | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [form, setForm] = useState<VehicleForm>({ ...emptyForm });
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
-  async function loadVehicles() {
-    setLoading(true);
-    setError("");
+  useEffect(() => {
+    let active = true;
 
-    const { data, error } = await supabase
-      .from("vehicles")
-      .select(
-        "id, nickname, make, model, model_year, trim, color, license_plate, vin, current_odometer, odometer_unit, created_at"
-      )
-      .order("created_at", { ascending: false });
+    async function loadUser() {
+      const { data, error: authError } = await supabase.auth.getUser();
 
-    if (error) {
-      setError(error.message);
-    } else {
-      setVehicles((data ?? []) as Vehicle[]);
+      if (!active) return;
+
+      if (authError || !data.user) {
+        setError("Your session could not be verified. Please sign in again.");
+        setUserId(null);
+      } else {
+        setUserId(data.user.id);
+      }
+
+      setAuthLoading(false);
     }
 
-    setLoading(false);
-  }
+    void loadUser();
 
-  useEffect(() => {
-    void loadVehicles();
+    return () => {
+      active = false;
+    };
   }, []);
 
-  function updateField(
-    field: keyof VehicleForm,
-    value: string
-  ) {
+  const vehiclesQuery = useQuery({
+    queryKey: ["vehicles", userId],
+    queryFn: () => getVehicles(userId!),
+    enabled: Boolean(userId),
+  });
+
+  const vehicles = vehiclesQuery.data ?? [];
+
+  const addVehicleMutation = useMutation({
+    mutationFn: async (values: VehicleForm) => {
+      if (!userId) throw new Error("Please sign in again.");
+
+      const { error: insertError } = await supabase
+        .from("vehicles")
+        .insert({
+          user_id: userId,
+          nickname: values.nickname.trim() || null,
+          make: values.make.trim(),
+          model: values.model.trim(),
+          model_year: values.model_year.trim()
+            ? Number(values.model_year)
+            : null,
+          trim: values.trim.trim() || null,
+          color: values.color.trim() || null,
+          license_plate: values.license_plate.trim() || null,
+          vin: values.vin.trim() || null,
+          current_odometer: Number(values.current_odometer),
+          odometer_unit: values.odometer_unit,
+        });
+
+      if (insertError) throw insertError;
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({
+        queryKey: ["vehicles", userId],
+      });
+
+      setForm({ ...emptyForm });
+      setSuccess("Vehicle added successfully.");
+      setError("");
+    },
+    onError: (err) => {
+      setError(
+        err instanceof Error ? err.message : "Unable to add vehicle.",
+      );
+    },
+  });
+
+  const deleteVehicleMutation = useMutation({
+    mutationFn: async (vehicle: Vehicle) => {
+      const { error: deleteError } = await supabase
+        .from("vehicles")
+        .delete()
+        .eq("id", vehicle.id)
+        .eq("user_id", userId!);
+
+      if (deleteError) throw deleteError;
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({
+        queryKey: ["vehicles", userId],
+      });
+
+      setSuccess("Vehicle deleted.");
+      setError("");
+    },
+    onError: (err) => {
+      setError(
+        err instanceof Error ? err.message : "Unable to delete vehicle.",
+      );
+    },
+  });
+
+  function updateField(field: keyof VehicleForm, value: string) {
     setForm((current) => ({ ...current, [field]: value }));
   }
 
@@ -97,56 +188,27 @@ export default function VehiclesPage() {
       return;
     }
 
-    if (!Number.isFinite(odometer) || odometer < 0 ||
-        !Number.isInteger(odometer)) {
+    if (
+      !Number.isFinite(odometer) ||
+      odometer < 0 ||
+      !Number.isInteger(odometer)
+    ) {
       setError("Enter a valid non-negative odometer reading.");
       return;
     }
 
-    setSaving(true);
-
-    const { data: authData, error: authError } =
-      await supabase.auth.getUser();
-
-    if (authError || !authData.user) {
-      setError("Your session could not be verified. Please sign in again.");
-      setSaving(false);
-      return;
+    try {
+      await addVehicleMutation.mutateAsync({ ...form });
+    } catch {
+      // The mutation's onError callback displays the error.
     }
-
-    const { error: insertError } = await supabase
-      .from("vehicles")
-      .insert({
-        user_id: authData.user.id,
-        nickname: form.nickname.trim() || null,
-        make,
-        model,
-        model_year: yearText ? Number(yearText) : null,
-        trim: form.trim.trim() || null,
-        color: form.color.trim() || null,
-        license_plate: form.license_plate.trim() || null,
-        vin: form.vin.trim() || null,
-        current_odometer: odometer,
-        odometer_unit: form.odometer_unit,
-      });
-
-    if (insertError) {
-      setError(insertError.message);
-    } else {
-      setForm({ ...emptyForm });
-      setSuccess("Vehicle added successfully.");
-      await loadVehicles();
-    }
-
-    setSaving(false);
   }
 
   async function handleDelete(vehicle: Vehicle) {
-    const name =
-      vehicle.nickname || `${vehicle.make} ${vehicle.model}`;
+    const name = vehicle.nickname || `${vehicle.make} ${vehicle.model}`;
 
     const confirmed = window.confirm(
-      `Delete ${name}? Its associated maintenance, fuel logs, and reminders may also be deleted.`
+      `Delete ${name}? Its associated maintenance, fuel logs, and reminders may also be deleted.`,
     );
 
     if (!confirmed) return;
@@ -154,20 +216,16 @@ export default function VehiclesPage() {
     setError("");
     setSuccess("");
 
-    const { error: deleteError } = await supabase
-      .from("vehicles")
-      .delete()
-      .eq("id", vehicle.id);
-
-    if (deleteError) {
-      setError(deleteError.message);
-    } else {
-      setVehicles((current) =>
-        current.filter((item) => item.id !== vehicle.id)
-      );
-      setSuccess("Vehicle deleted.");
+    try {
+      await deleteVehicleMutation.mutateAsync(vehicle);
+    } catch {
+      // The mutation's onError callback displays the error.
     }
   }
+
+  const loading = authLoading || vehiclesQuery.isPending;
+  const saving = addVehicleMutation.isPending;
+  const deleting = deleteVehicleMutation.isPending;
 
   return (
     <main className="min-h-screen bg-[#0b0d10] px-4 py-8 text-white sm:px-8">
@@ -182,14 +240,23 @@ export default function VehiclesPage() {
           </p>
         </header>
 
-        {error && (
-          <p role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">
-            {error}
+        {(error || vehiclesQuery.error) && (
+          <p
+            role="alert"
+            className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300"
+          >
+            {error ||
+              (vehiclesQuery.error instanceof Error
+                ? vehiclesQuery.error.message
+                : "Unable to load vehicles.")}
           </p>
         )}
 
         {success && (
-          <p role="status" className="rounded-lg border border-green-500/30 bg-green-500/10 p-3 text-sm text-green-300">
+          <p
+            role="status"
+            className="rounded-lg border border-green-500/30 bg-green-500/10 p-3 text-sm text-green-300"
+          >
             {success}
           </p>
         )}
@@ -286,7 +353,9 @@ export default function VehiclesPage() {
                   step="1"
                   required
                   value={form.current_odometer}
-                  onChange={(e) => updateField("current_odometer", e.target.value)}
+                  onChange={(e) =>
+                    updateField("current_odometer", e.target.value)
+                  }
                   className={inputClass}
                 />
               </Field>
@@ -294,7 +363,9 @@ export default function VehiclesPage() {
               <Field label="Odometer unit">
                 <select
                   value={form.odometer_unit}
-                  onChange={(e) => updateField("odometer_unit", e.target.value)}
+                  onChange={(e) =>
+                    updateField("odometer_unit", e.target.value)
+                  }
                   className={inputClass}
                 >
                   <option value="km">Kilometers (km)</option>
@@ -305,7 +376,7 @@ export default function VehiclesPage() {
 
             <button
               type="submit"
-              disabled={saving}
+              disabled={saving || !userId}
               className="rounded-lg bg-orange-500 px-5 py-3 font-semibold text-black transition hover:bg-orange-400 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {saving ? "Saving..." : "Add Vehicle"}
@@ -317,12 +388,24 @@ export default function VehiclesPage() {
           <div className="mb-4 flex items-center justify-between">
             <h2 className="text-xl font-semibold">Your garage</h2>
             <span className="text-sm text-gray-400">
-              {vehicles.length} {vehicles.length === 1 ? "vehicle" : "vehicles"}
+              {vehicles.length}{" "}
+              {vehicles.length === 1 ? "vehicle" : "vehicles"}
             </span>
           </div>
 
           {loading ? (
             <p className="text-gray-400">Loading vehicles...</p>
+          ) : vehiclesQuery.isError ? (
+            <div className="rounded-2xl border border-dashed border-white/15 p-8 text-center">
+              <p className="font-medium">Couldn't load your garage</p>
+              <button
+                type="button"
+                onClick={() => void vehiclesQuery.refetch()}
+                className="mt-3 rounded-lg border border-white/15 px-4 py-2 text-sm hover:bg-white/5"
+              >
+                Try again
+              </button>
+            </div>
           ) : vehicles.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-white/15 p-8 text-center">
               <p className="font-medium">Your garage is empty</p>
@@ -343,9 +426,7 @@ export default function VehiclesPage() {
                         {vehicle.nickname || "My vehicle"}
                       </p>
                       <h3 className="mt-2 text-xl font-semibold">
-                        {vehicle.model_year
-                          ? `${vehicle.model_year} `
-                          : ""}
+                        {vehicle.model_year ? `${vehicle.model_year} ` : ""}
                         {vehicle.make} {vehicle.model}
                       </h3>
                       {vehicle.trim && (
@@ -358,9 +439,10 @@ export default function VehiclesPage() {
                     <button
                       type="button"
                       onClick={() => void handleDelete(vehicle)}
-                      className="rounded-lg border border-red-500/30 px-3 py-2 text-sm text-red-300 hover:bg-red-500/10"
+                      disabled={deleting}
+                      className="rounded-lg border border-red-500/30 px-3 py-2 text-sm text-red-300 hover:bg-red-500/10 disabled:opacity-50"
                     >
-                      Delete
+                      {deleting ? "Deleting..." : "Delete"}
                     </button>
                   </div>
 
@@ -368,7 +450,8 @@ export default function VehiclesPage() {
                     <div>
                       <p className="text-xs text-gray-500">Odometer</p>
                       <p className="mt-1 font-medium">
-                        {vehicle.current_odometer.toLocaleString()} {vehicle.odometer_unit}
+                        {vehicle.current_odometer.toLocaleString()}{" "}
+                        {vehicle.odometer_unit}
                       </p>
                     </div>
                     <div>
@@ -402,7 +485,7 @@ function Field({
   children,
 }: {
   label: string;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   return (
     <label className="block space-y-2 text-sm text-gray-300">

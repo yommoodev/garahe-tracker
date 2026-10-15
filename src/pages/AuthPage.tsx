@@ -1,5 +1,5 @@
 
-import { useEffect, useState, type FormEvent } from "react";
+import {  useState, type FormEvent } from "react";
 import { Link, Navigate, useNavigate } from "react-router-dom";
 import { ArrowRight, CarFront, Gauge, Wrench } from "lucide-react";
 import { supabase } from "../lib/supabase";
@@ -241,10 +241,10 @@ export default function AuthPage() {
   );
 }
 
-function NavigateToDashboard({ navigate }: { navigate: () => void }) {
-  useEffect(() => {
-    navigate();
-  }, [navigate]);
+// function NavigateToDashboard({ navigate }: { navigate: () => void }) {
+//   useEffect(() => {
+//     navigate();
+//   }, [navigate]);
 
-  return null;
-}
+//   return null;
+// }

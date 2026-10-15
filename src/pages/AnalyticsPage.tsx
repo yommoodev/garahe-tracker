@@ -1,5 +1,5 @@
-
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   Bar,
   BarChart,
@@ -12,6 +12,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { useAuth } from "../AuthContext";
 import { supabase } from "../lib/supabase";
 
 type MaintenanceRecord = {
@@ -83,88 +84,74 @@ function getLastSixMonths() {
   });
 }
 
+async function fetchAnalytics(userId: string): Promise<AnalyticsData> {
+  const [maintenanceResult, fuelResult] = await Promise.all([
+    supabase
+      .from("maintenance_records")
+      .select("id, title, category, service_date, cost")
+      .eq("user_id", userId)
+      .order("service_date", { ascending: true }),
+
+    supabase
+      .from("fuel_logs")
+      .select(
+        "id, fill_date, odometer, liters, price_per_liter, total_cost, full_tank",
+      )
+      .eq("user_id", userId)
+      .order("fill_date", { ascending: true }),
+  ]);
+
+  if (maintenanceResult.error) {
+    throw maintenanceResult.error;
+  }
+
+  if (fuelResult.error) {
+    throw fuelResult.error;
+  }
+
+  return {
+    maintenance: (maintenanceResult.data ?? []) as MaintenanceRecord[],
+    fuel: (fuelResult.data ?? []) as FuelLog[],
+  };
+}
+
 export default function AnalyticsPage() {
-  const [data, setData] = useState<AnalyticsData>({
-    maintenance: [],
-    fuel: [],
-  });
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const { session, loading: authLoading } = useAuth();
+  const userId = session?.user.id;
 
-  useEffect(() => {
-    let active = true;
-
-    async function loadAnalytics() {
-      setLoading(true);
-      setError("");
-
-      try {
-        const { data: authData, error: authError } =
-          await supabase.auth.getUser();
-
-        if (authError) throw authError;
-        if (!authData.user) throw new Error("Please sign in again.");
-
-        const userId = authData.user.id;
-
-        const [maintenanceResult, fuelResult] = await Promise.all([
-          supabase
-            .from("maintenance_records")
-            .select("id, title, category, service_date, cost")
-            .eq("user_id", userId)
-            .order("service_date", { ascending: true }),
-
-          supabase
-            .from("fuel_logs")
-            .select(
-              "id, fill_date, odometer, liters, price_per_liter, total_cost, full_tank",
-            )
-            .eq("user_id", userId)
-            .order("fill_date", { ascending: true }),
-        ]);
-
-        if (maintenanceResult.error) throw maintenanceResult.error;
-        if (fuelResult.error) throw fuelResult.error;
-
-        if (active) {
-          setData({
-            maintenance: (maintenanceResult.data ??
-              []) as MaintenanceRecord[],
-            fuel: (fuelResult.data ?? []) as FuelLog[],
-          });
-        }
-      } catch (err) {
-        if (active) {
-          setError(
-            err instanceof Error
-              ? err.message
-              : "Unable to load analytics.",
-          );
-        }
-      } finally {
-        if (active) setLoading(false);
+  const {
+    data,
+    error,
+    isPending,
+    isFetching,
+    refetch,
+  } = useQuery<AnalyticsData, Error>({
+    queryKey: ["analytics", userId],
+    queryFn: () => {
+      if (!userId) {
+        throw new Error("Please sign in again.");
       }
-    }
 
-    void loadAnalytics();
+      return fetchAnalytics(userId);
+    },
+    enabled: Boolean(userId) && !authLoading,
+  });
 
-    return () => {
-      active = false;
-    };
-  }, []);
+  const maintenance = data?.maintenance ?? [];
+  const fuel = data?.fuel ?? [];
 
   const analytics = useMemo(() => {
-    const maintenanceTotal = data.maintenance.reduce(
+    const maintenanceTotal = maintenance.reduce(
       (sum, record) => sum + Number(record.cost || 0),
       0,
     );
 
-    const fuelTotal = data.fuel.reduce(
+    const fuelTotal = fuel.reduce(
       (sum, log) => sum + Number(log.total_cost || 0),
       0,
     );
 
-    const totalLiters = data.fuel.reduce(
+    const totalLiters = fuel.reduce(
       (sum, log) => sum + Number(log.liters || 0),
       0,
     );
@@ -175,11 +162,11 @@ export default function AnalyticsPage() {
     const months = getLastSixMonths();
 
     const monthly = months.map((month) => {
-      const maintenanceCost = data.maintenance
+      const maintenanceCost = maintenance
         .filter((record) => record.service_date.startsWith(month.key))
         .reduce((sum, record) => sum + Number(record.cost || 0), 0);
 
-      const fuelCost = data.fuel
+      const fuelCost = fuel
         .filter((log) => log.fill_date.startsWith(month.key))
         .reduce((sum, log) => sum + Number(log.total_cost || 0), 0);
 
@@ -193,7 +180,7 @@ export default function AnalyticsPage() {
 
     const categoryTotals = new Map<string, number>();
 
-    for (const record of data.maintenance) {
+    for (const record of maintenance) {
       const category = (record.category || "other")
         .replace(/[_-]/g, " ")
         .replace(/\b\w/g, (letter) => letter.toUpperCase());
@@ -208,9 +195,9 @@ export default function AnalyticsPage() {
       .map(([name, value]) => ({ name, value }))
       .sort((a, b) => b.value - a.value);
 
-    // Fuel efficiency is estimated only between consecutive full-tank fills.
+    // Estimate fuel efficiency only between consecutive full-tank fills.
     // Both fills must be marked full-tank, and the odometer must increase.
-    const sortedFuel = [...data.fuel].sort(
+    const sortedFuel = [...fuel].sort(
       (a, b) =>
         a.odometer - b.odometer ||
         a.fill_date.localeCompare(b.fill_date),
@@ -249,12 +236,22 @@ export default function AnalyticsPage() {
       categories,
       averageEfficiency,
     };
-  }, [data]);
+  }, [maintenance, fuel]);
 
-  if (loading) {
+  if (authLoading || isPending) {
     return (
       <main className="min-h-screen bg-slate-950 p-6 text-slate-100">
         <p className="text-slate-400">Loading your analytics...</p>
+      </main>
+    );
+  }
+
+  if (!session) {
+    return (
+      <main className="min-h-screen bg-slate-950 p-6 text-slate-100">
+        <p className="text-slate-400">
+          Please sign in to view your analytics.
+        </p>
       </main>
     );
   }
@@ -279,21 +276,39 @@ export default function AnalyticsPage() {
             role="alert"
             className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300"
           >
-            {error}
+            <p>
+              {error.message || "Unable to load analytics."}
+            </p>
+            <button
+              type="button"
+              onClick={() => void refetch()}
+              className="mt-3 rounded-lg border border-red-400/30 px-3 py-2 font-medium hover:bg-red-500/10"
+            >
+              Try again
+            </button>
           </div>
         )}
 
+        {isFetching && !isPending && (
+          <p className="text-xs text-slate-500">
+            Refreshing analytics...
+          </p>
+        )}
+
         <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <StatCard label="Total spending" value={php(analytics.totalSpent)} />
+          <StatCard
+            label="Total spending"
+            value={php(analytics.totalSpent)}
+          />
           <StatCard
             label="Maintenance"
             value={php(analytics.maintenanceTotal)}
-            detail={`${data.maintenance.length} records`}
+            detail={`${maintenance.length} records`}
           />
           <StatCard
             label="Fuel"
             value={php(analytics.fuelTotal)}
-            detail={`${data.fuel.length} fill-ups`}
+            detail={`${fuel.length} fill-ups`}
           />
           <StatCard
             label="Fuel logged"

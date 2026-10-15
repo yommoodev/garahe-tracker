@@ -1,6 +1,9 @@
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { FormEvent, ReactNode } from "react";
+import { Link } from "react-router-dom";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useAuth } from "../AuthContext";
 import { supabase } from "../lib/supabase";
 
 type Vehicle = {
@@ -40,6 +43,23 @@ type MaintenanceForm = {
   shop_name: string;
 };
 
+type SaveVariables = {
+  editingId: string | null;
+  vehicleId: string;
+  payload: {
+    user_id: string;
+    vehicle_id: string;
+    title: string;
+    category: string;
+    description: string | null;
+    service_date: string;
+    odometer: number | null;
+    cost: number;
+    currency: string;
+    shop_name: string | null;
+  };
+};
+
 const categories = [
   "oil_change",
   "inspection",
@@ -62,7 +82,7 @@ function getToday(): string {
   return `${year}-${month}-${day}`;
 }
 
-const emptyForm: MaintenanceForm = {
+const createEmptyForm = (): MaintenanceForm => ({
   title: "",
   category: "other",
   description: "",
@@ -70,7 +90,7 @@ const emptyForm: MaintenanceForm = {
   odometer: "",
   cost: "0",
   shop_name: "",
-};
+});
 
 function Field({
   label,
@@ -104,97 +124,200 @@ function formatCategory(category: string) {
     .join(" ");
 }
 
+async function fetchVehicles(userId: string): Promise<Vehicle[]> {
+  const { data, error } = await supabase
+    .from("vehicles")
+    .select(
+      "id, make, model, model_year, nickname, current_odometer, odometer_unit",
+    )
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false });
+
+  if (error) throw error;
+
+  return (data ?? []) as Vehicle[];
+}
+
+async function fetchMaintenanceRecords(
+  userId: string,
+  vehicleId: string,
+): Promise<MaintenanceRecord[]> {
+  const { data, error } = await supabase
+    .from("maintenance_records")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("vehicle_id", vehicleId)
+    .order("service_date", { ascending: false })
+    .order("created_at", { ascending: false });
+
+  if (error) throw error;
+
+  return (data ?? []) as MaintenanceRecord[];
+}
+
 export default function MaintenancePage() {
-  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const { session } = useAuth();
+  const queryClient = useQueryClient();
+  const userId = session?.user.id;
+
   const [selectedVehicleId, setSelectedVehicleId] = useState("");
-  const [records, setRecords] = useState<MaintenanceRecord[]>([]);
-  const [form, setForm] = useState<MaintenanceForm>({ ...emptyForm });
+  const [form, setForm] = useState<MaintenanceForm>(createEmptyForm);
   const [editingId, setEditingId] = useState<string | null>(null);
-
-  const [loadingVehicles, setLoadingVehicles] = useState(true);
-  const [loadingRecords, setLoadingRecords] = useState(false);
-  const [saving, setSaving] = useState(false);
-
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
+  // Cache the user's vehicles.
+  const {
+    data: vehicles = [],
+    isPending: loadingVehicles,
+    error: vehiclesError,
+    refetch: refetchVehicles,
+    isFetching: fetchingVehicles,
+  } = useQuery<Vehicle[], Error>({
+    queryKey: ["vehicles", userId],
+    queryFn: () => fetchVehicles(userId!),
+    enabled: Boolean(userId),
+  });
+
+  // Use the selected vehicle when valid; otherwise select the first vehicle.
   const selectedVehicle = vehicles.find(
     (vehicle) => vehicle.id === selectedVehicleId,
   );
 
-  async function loadVehicles() {
-    setLoadingVehicles(true);
-    setError("");
+  const activeVehicleId =
+    selectedVehicle?.id ?? vehicles[0]?.id ?? "";
 
-    const { data, error: queryError } = await supabase
-      .from("vehicles")
-      .select(
-        "id, make, model, model_year, nickname, current_odometer, odometer_unit",
-      )
-      .order("created_at", { ascending: false });
+  // Cache maintenance records separately for each user and vehicle.
+  const {
+    data: records = [],
+    isPending: loadingRecords,
+    error: recordsError,
+    refetch: refetchRecords,
+    isFetching: fetchingRecords,
+  } = useQuery<MaintenanceRecord[], Error>({
+    queryKey: ["maintenance", userId, activeVehicleId],
+    queryFn: () => fetchMaintenanceRecords(userId!, activeVehicleId),
+    enabled: Boolean(userId && activeVehicleId),
+  });
 
-    if (queryError) {
-      setError(queryError.message);
-      setLoadingVehicles(false);
-      return;
-    }
+  // Add or edit a maintenance record.
+  const saveMutation = useMutation<boolean, Error, SaveVariables>({
+    mutationFn: async ({ editingId, vehicleId, payload }) => {
+      const result = editingId
+        ? await supabase
+            .from("maintenance_records")
+            .update(payload)
+            .eq("id", editingId)
+            .eq("user_id", userId!)
+            .eq("vehicle_id", vehicleId)
+            .select("id")
+            .maybeSingle()
+        : await supabase
+            .from("maintenance_records")
+            .insert(payload)
+            .select("id")
+            .single();
 
-    const loadedVehicles = (data ?? []) as Vehicle[];
-    setVehicles(loadedVehicles);
+      if (result.error) throw result.error;
 
-    setSelectedVehicleId((currentId) => {
-      if (loadedVehicles.some((vehicle) => vehicle.id === currentId)) {
-        return currentId;
+      if (!result.data) {
+        throw new Error(
+          "No record was changed. It may have been deleted or you may not have access to it.",
+        );
       }
 
-      return loadedVehicles[0]?.id ?? "";
-    });
+      return true;
+    },
 
-    setLoadingVehicles(false);
-  }
+    onSuccess: async (_result, variables) => {
+      setSuccess(
+        variables.editingId
+          ? "Maintenance record updated."
+          : "Maintenance record added.",
+      );
 
-  async function loadRecords(vehicleId: string) {
-    if (!vehicleId) {
-      setRecords([]);
-      return;
-    }
+      setEditingId(null);
+      setForm(createEmptyForm());
+      setError("");
 
-    setLoadingRecords(true);
-    setError("");
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["maintenance", userId, variables.vehicleId],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["dashboard", userId],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["analytics", userId],
+        }),
+      ]);
+    },
 
-    const { data, error: queryError } = await supabase
-      .from("maintenance_records")
-      .select("*")
-      .eq("vehicle_id", vehicleId)
-      .order("service_date", { ascending: false })
-      .order("created_at", { ascending: false });
+    onError: (mutationError) => {
+      setError(mutationError.message || "Unable to save the maintenance record.");
+    },
+  });
 
-    if (queryError) {
-      setError(queryError.message);
-      setLoadingRecords(false);
-      return;
-    }
+  // Delete a maintenance record.
+  const deleteMutation = useMutation<void, Error, MaintenanceRecord>({
+    mutationFn: async (record) => {
+      const { data, error: deleteError } = await supabase
+        .from("maintenance_records")
+        .delete()
+        .eq("id", record.id)
+        .eq("user_id", userId!)
+        .eq("vehicle_id", record.vehicle_id)
+        .select("id");
 
-    setRecords((data ?? []) as MaintenanceRecord[]);
-    setLoadingRecords(false);
-  }
+      if (deleteError) throw deleteError;
 
-  useEffect(() => {
-    void loadVehicles();
-  }, []);
+      if (!data || data.length === 0) {
+        throw new Error(
+          "The record was not deleted. It may have already been removed or you may not have access to it.",
+        );
+      }
+    },
 
-  useEffect(() => {
-    setEditingId(null);
-    setForm({ ...emptyForm });
-    setSuccess("");
-    void loadRecords(selectedVehicleId);
-  }, [selectedVehicleId]);
+    onSuccess: async (_result, record) => {
+      if (editingId === record.id) {
+        setEditingId(null);
+        setForm(createEmptyForm());
+      }
+
+      setError("");
+      setSuccess("Maintenance record deleted.");
+
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["maintenance", userId, record.vehicle_id],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["dashboard", userId],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["analytics", userId],
+        }),
+      ]);
+    },
+
+    onError: (mutationError) => {
+      setError(mutationError.message || "Unable to delete the maintenance record.");
+    },
+  });
 
   function updateForm<K extends keyof MaintenanceForm>(
     field: K,
     value: MaintenanceForm[K],
   ) {
     setForm((current) => ({ ...current, [field]: value }));
+  }
+
+  function handleVehicleChange(vehicleId: string) {
+    setSelectedVehicleId(vehicleId);
+    setEditingId(null);
+    setForm(createEmptyForm());
+    setError("");
+    setSuccess("");
   }
 
   function startEditing(record: MaintenanceRecord) {
@@ -218,7 +341,7 @@ export default function MaintenancePage() {
 
   function cancelEditing() {
     setEditingId(null);
-    setForm({ ...emptyForm });
+    setForm(createEmptyForm());
     setError("");
     setSuccess("");
   }
@@ -228,13 +351,23 @@ export default function MaintenancePage() {
     setError("");
     setSuccess("");
 
-    if (!selectedVehicleId) {
+    if (!userId) {
+      setError("Your session could not be verified. Please sign in again.");
+      return;
+    }
+
+    if (!activeVehicleId) {
       setError("Add a vehicle before creating a maintenance record.");
       return;
     }
 
     if (!form.title.trim()) {
       setError("Enter a service or repair title.");
+      return;
+    }
+
+    if (!form.service_date) {
+      setError("Select a service date.");
       return;
     }
 
@@ -255,21 +388,9 @@ export default function MaintenancePage() {
       return;
     }
 
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      setError("Your session could not be verified. Please sign in again.");
-      return;
-    }
-
-    setSaving(true);
-
-    const payload = {
-      user_id: user.id,
-      vehicle_id: selectedVehicleId,
+    const payload: SaveVariables["payload"] = {
+      user_id: userId,
+      vehicle_id: activeVehicleId,
       title: form.title.trim(),
       category: form.category,
       description: form.description.trim() || null,
@@ -280,43 +401,14 @@ export default function MaintenancePage() {
       shop_name: form.shop_name.trim() || null,
     };
 
-    const result = editingId
-      ? await supabase
-          .from("maintenance_records")
-          .update(payload)
-          .eq("id", editingId)
-          .eq("vehicle_id", selectedVehicleId)
-          .select("id")
-          .maybeSingle()
-      : await supabase
-          .from("maintenance_records")
-          .insert(payload)
-          .select("id")
-          .single();
-
-    if (result.error) {
-      setError(result.error.message);
-      setSaving(false);
-      return;
-    }
-
-    if (!result.data) {
-      setError(
-        "No record was changed. It may have been deleted or you may not have access to it.",
-      );
-      setSaving(false);
-      return;
-    }
-
-    setSuccess(editingId ? "Maintenance record updated." : "Maintenance record added.");
-    setEditingId(null);
-    setForm({ ...emptyForm });
-
-    await loadRecords(selectedVehicleId);
-    setSaving(false);
+    saveMutation.mutate({
+      editingId,
+      vehicleId: activeVehicleId,
+      payload,
+    });
   }
 
-  async function handleDelete(record: MaintenanceRecord) {
+  function handleDelete(record: MaintenanceRecord) {
     const confirmed = window.confirm(
       `Delete "${record.title}"? This action cannot be undone.`,
     );
@@ -325,25 +417,7 @@ export default function MaintenancePage() {
 
     setError("");
     setSuccess("");
-
-    const { error: deleteError } = await supabase
-      .from("maintenance_records")
-      .delete()
-      .eq("id", record.id)
-      .eq("vehicle_id", selectedVehicleId);
-
-    if (deleteError) {
-      setError(deleteError.message);
-      return;
-    }
-
-    if (editingId === record.id) {
-      setEditingId(null);
-      setForm({ ...emptyForm });
-    }
-
-    setSuccess("Maintenance record deleted.");
-    await loadRecords(selectedVehicleId);
+    deleteMutation.mutate(record);
   }
 
   const totalSpent = records.reduce(
@@ -351,10 +425,41 @@ export default function MaintenancePage() {
     0,
   );
 
-  if (loadingVehicles) {
+  const loading = loadingVehicles || (!userId ? false : loadingRecords);
+
+  if (!userId) {
+    return (
+      <main className="min-h-screen bg-slate-950 p-6 text-slate-300">
+        Please sign in to view your maintenance records.
+      </main>
+    );
+  }
+
+  if (loadingVehicles && vehicles.length === 0) {
     return (
       <main className="min-h-screen bg-slate-950 p-6 text-slate-300">
         Loading your vehicles...
+      </main>
+    );
+  }
+
+  if (vehiclesError && vehicles.length === 0) {
+    return (
+      <main className="min-h-screen bg-slate-950 p-6 text-slate-100">
+        <div
+          role="alert"
+          className="max-w-xl rounded-xl border border-red-500/30 bg-red-500/10 p-5 text-red-300"
+        >
+          <p>Unable to load your vehicles: {vehiclesError.message}</p>
+          <button
+            type="button"
+            onClick={() => void refetchVehicles()}
+            disabled={fetchingVehicles}
+            className="mt-4 rounded-lg border border-red-400/30 px-4 py-2 text-sm font-semibold disabled:opacity-50"
+          >
+            {fetchingVehicles ? "Retrying..." : "Retry"}
+          </button>
+        </div>
       </main>
     );
   }
@@ -398,23 +503,27 @@ export default function MaintenancePage() {
             <p className="mt-2 text-slate-400">
               Add a vehicle first, then you can attach maintenance records to it.
             </p>
-            <a
-              href="/vehicles"
+            <Link
+              to="/vehicles"
               className="mt-5 inline-flex rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-500"
             >
               Go to Vehicles
-            </a>
+            </Link>
           </section>
         ) : (
           <>
             <section className="grid gap-4 sm:grid-cols-2">
               <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
-                <p className="text-sm text-slate-400">Records for this vehicle</p>
+                <p className="text-sm text-slate-400">
+                  Records for this vehicle
+                </p>
                 <p className="mt-2 text-3xl font-bold">{records.length}</p>
               </div>
 
               <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
-                <p className="text-sm text-slate-400">Total recorded maintenance cost</p>
+                <p className="text-sm text-slate-400">
+                  Total recorded maintenance cost
+                </p>
                 <p className="mt-2 text-3xl font-bold">
                   {formatCurrency(totalSpent, "PHP")}
                 </p>
@@ -431,8 +540,8 @@ export default function MaintenancePage() {
 
               <select
                 className={inputClass}
-                value={selectedVehicleId}
-                onChange={(event) => setSelectedVehicleId(event.target.value)}
+                value={activeVehicleId}
+                onChange={(event) => handleVehicleChange(event.target.value)}
               >
                 {vehicles.map((vehicle) => (
                   <option key={vehicle.id} value={vehicle.id}>
@@ -480,7 +589,9 @@ export default function MaintenancePage() {
                     <select
                       className={inputClass}
                       value={form.category}
-                      onChange={(event) => updateForm("category", event.target.value)}
+                      onChange={(event) =>
+                        updateForm("category", event.target.value)
+                      }
                     >
                       {categories.map((category) => (
                         <option key={category} value={category}>
@@ -495,19 +606,25 @@ export default function MaintenancePage() {
                       className={inputClass}
                       type="date"
                       value={form.service_date}
-                      onChange={(event) => updateForm("service_date", event.target.value)}
+                      onChange={(event) =>
+                        updateForm("service_date", event.target.value)
+                      }
                       required
                     />
                   </Field>
 
-                  <Field label={`Odometer (${selectedVehicle?.odometer_unit ?? "km"})`}>
+                  <Field
+                    label={`Odometer (${selectedVehicle?.odometer_unit ?? "km"})`}
+                  >
                     <input
                       className={inputClass}
                       type="number"
                       min="0"
                       step="1"
                       value={form.odometer}
-                      onChange={(event) => updateForm("odometer", event.target.value)}
+                      onChange={(event) =>
+                        updateForm("odometer", event.target.value)
+                      }
                       placeholder="e.g. 120000"
                     />
                   </Field>
@@ -528,7 +645,9 @@ export default function MaintenancePage() {
                     <input
                       className={inputClass}
                       value={form.shop_name}
-                      onChange={(event) => updateForm("shop_name", event.target.value)}
+                      onChange={(event) =>
+                        updateForm("shop_name", event.target.value)
+                      }
                       placeholder="e.g. Local mechanic"
                       maxLength={120}
                     />
@@ -540,7 +659,9 @@ export default function MaintenancePage() {
                     className={inputClass}
                     rows={4}
                     value={form.description}
-                    onChange={(event) => updateForm("description", event.target.value)}
+                    onChange={(event) =>
+                      updateForm("description", event.target.value)
+                    }
                     placeholder="Parts replaced, work performed, or other notes..."
                     maxLength={3000}
                   />
@@ -549,10 +670,10 @@ export default function MaintenancePage() {
                 <div className="flex flex-wrap gap-3">
                   <button
                     type="submit"
-                    disabled={saving}
+                    disabled={saveMutation.isPending}
                     className="rounded-xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    {saving
+                    {saveMutation.isPending
                       ? "Saving..."
                       : editingId
                         ? "Save Changes"
@@ -573,16 +694,40 @@ export default function MaintenancePage() {
             </section>
 
             <section className="space-y-4">
-              <div>
-                <h2 className="text-2xl font-bold">Service history</h2>
-                <p className="mt-1 text-sm text-slate-400">
-                  {selectedVehicle?.nickname ||
-                    `${selectedVehicle?.make ?? ""} ${selectedVehicle?.model ?? ""}`}
-                </p>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-2xl font-bold">Service history</h2>
+                  <p className="mt-1 text-sm text-slate-400">
+                    {selectedVehicle?.nickname ||
+                      `${selectedVehicle?.make ?? ""} ${selectedVehicle?.model ?? ""}`}
+                  </p>
+                </div>
+
+                {recordsError && (
+                  <button
+                    type="button"
+                    onClick={() => void refetchRecords()}
+                    disabled={fetchingRecords}
+                    className="rounded-lg border border-red-500/30 px-3 py-2 text-sm text-red-300 hover:bg-red-500/10 disabled:opacity-50"
+                  >
+                    {fetchingRecords ? "Retrying..." : "Retry loading records"}
+                  </button>
+                )}
               </div>
 
-              {loadingRecords ? (
-                <p className="py-8 text-slate-400">Loading maintenance records...</p>
+              {recordsError && (
+                <div
+                  role="alert"
+                  className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300"
+                >
+                  Unable to load maintenance records: {recordsError.message}
+                </div>
+              )}
+
+              {loading ? (
+                <p className="py-8 text-slate-400">
+                  Loading maintenance records...
+                </p>
               ) : records.length === 0 ? (
                 <div className="rounded-2xl border border-dashed border-slate-700 p-8 text-center">
                   <h3 className="font-semibold">No maintenance records yet</h3>
@@ -600,17 +745,22 @@ export default function MaintenancePage() {
                       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-center gap-2">
-                            <h3 className="text-lg font-semibold">{record.title}</h3>
+                            <h3 className="text-lg font-semibold">
+                              {record.title}
+                            </h3>
                             <span className="rounded-full border border-slate-700 px-3 py-1 text-xs text-slate-300">
                               {formatCategory(record.category)}
                             </span>
                           </div>
 
                           <p className="mt-2 text-sm text-slate-400">
-                            {new Date(`${record.service_date}T00:00:00`).toLocaleDateString(
-                              "en-PH",
-                              { year: "numeric", month: "short", day: "numeric" },
-                            )}
+                            {new Date(
+                              `${record.service_date}T00:00:00`,
+                            ).toLocaleDateString("en-PH", {
+                              year: "numeric",
+                              month: "short",
+                              day: "numeric",
+                            })}
                             {record.odometer !== null &&
                               ` · ${record.odometer.toLocaleString()} ${selectedVehicle?.odometer_unit ?? "km"}`}
                           </p>
@@ -643,10 +793,14 @@ export default function MaintenancePage() {
                             </button>
                             <button
                               type="button"
-                              onClick={() => void handleDelete(record)}
-                              className="rounded-lg border border-red-500/30 px-3 py-2 text-sm text-red-300 hover:bg-red-500/10"
+                              onClick={() => handleDelete(record)}
+                              disabled={deleteMutation.isPending}
+                              className="rounded-lg border border-red-500/30 px-3 py-2 text-sm text-red-300 hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
                             >
-                              Delete
+                              {deleteMutation.isPending &&
+                              deleteMutation.variables?.id === record.id
+                                ? "Deleting..."
+                                : "Delete"}
                             </button>
                           </div>
                         </div>
